@@ -22,14 +22,24 @@ from skorch.callbacks import PrintLog
 from skorch import NeuralNet
 from skorch.callbacks import ProgressBar
 import os
+import argparse
+from resnet1d import resnet18, resnet34, resnet50, resnet101
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-
-
 warnings.filterwarnings("ignore")
+
+models = {'resnet18': resnet18, 'resnet34': resnet34,
+          'resnet50': resnet50, 'resnet101': resnet101}
 
 mods = ['roff_3', 'roff_5']
 class_num = len(mods)
+
+parser = argparse.ArgumentParser(description='ResNet Roll Off Classification')
+parser.add_argument('--arch', default='resnet18', metavar='ARCH',
+                    help='model architecture: resnet18, resnet34, resnet50, resnet101')
+
+parser.add_argument('--cuda', default='0', metavar='N', type=str,
+                    help='cuda id')
 
 
 def import_from_mat(data, size):
@@ -61,94 +71,15 @@ def load_data():
     X = features
     y = labels.reshape(-1)
 
-    # class_num = 10
-    # X, y = make_classification(100, 2048,
-    #                            n_informative=5,
-    #                            n_classes=class_num,
-    #                            random_state=0)
-    # X = X.astype(np.float32)
-    # y = y.astype(np.int64)
+    # class_num = 2
+    #     # X, y = make_classification(100, 2048,
+    #     #                            n_informative=5,
+    #     #                            n_classes=class_num,
+    #     #                            random_state=0)
+    #     # X = X.astype(np.float32)
+    #     # y = y.astype(np.int64)
 
     return X, y
-
-
-class VGGNet(nn.Module):
-
-    print("Define VGG Net")
-
-    def __init__(self):
-        super(VGGNet, self).__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(2, 64, 3, padding=1),  # batch, 64, 1024
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),  # batch, 64, 512
-        )
-        self.conv2 = nn.Sequential(
-            nn.Conv1d(64, 64, 3, padding=1),  # batch, 64, 512
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),  # batch, 64, 256
-        )
-        self.conv3 = nn.Sequential(
-            nn.Conv1d(64, 64, 3, padding=1),  # batch, 64, 256
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),  # batch, 64, 128
-        )
-        self.conv4 = nn.Sequential(
-            nn.Conv1d(64, 64, 3, padding=1),  # batch, 64, 128
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),  # batch, 64, 64
-        )
-        self.conv5 = nn.Sequential(
-            nn.Conv1d(64, 64, 3, padding=1),  # batch, 64, 64
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),  # batch, 64, 32
-        )
-        self.conv6 = nn.Sequential(
-            nn.Conv1d(64, 64, 3, padding=1),  # batch, 64, 32
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),  # batch, 64, 16
-        )
-        self.conv7 = nn.Sequential(
-            nn.Conv1d(64, 64, 3, padding=1),  # batch, 64, 16
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),  # batch, 64, 8
-        )
-        self.fc1 = nn.Sequential(
-            nn.Linear(64 * 8, 128),
-            nn.ReLU(),
-            nn.Dropout(),
-        )
-        self.fc2 = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Dropout(),
-        )
-        self.fc3 = nn.Sequential(
-            nn.Linear(128, class_num),
-        )
-
-    def forward(self, x, **kwargs):
-        x = x.reshape((x.size(0), 2, -1))
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-        x = self.conv5(x)
-        x = self.conv6(x)
-        x = self.conv7(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc1(x)
-        x = self.fc2(x)
-        x = self.fc3(x)
-        x = F.log_softmax(x, dim=1)
-        return x
 
 
 class SaveBestParam(Checkpoint):
@@ -168,14 +99,40 @@ class StopRestore(EarlyStopping):
 
     """Early Stop and Restore best module state"""
 
+    def __init__(
+            self,
+            monitor='valid_loss',
+            patience=5,
+            threshold=1e-4,
+            threshold_mode='rel',
+            lower_is_better=True,
+            sink=print,
+            lr_high=10,
+            lr_decay=2,
+    ):
+        self.monitor = monitor
+        self.lower_is_better = lower_is_better
+        self.patience = patience
+        self.threshold = threshold
+        self.threshold_mode = threshold_mode
+        self.misses_ = 0
+        self.dynamic_threshold_ = None
+        self.sink = sink
+        self.lr_high = lr_high
+        self.lr_decay = lr_decay
+
     def on_epoch_end(self, net, **kwargs):
-        # super().on_epoch_end(net, **kwargs)
         current_score = net.history[-1, self.monitor]
         if not self._is_score_improved(current_score):
             self.misses_ += 1
         else:
             self.misses_ = 0
             self.dynamic_threshold_ = self._calc_new_threshold(current_score)
+
+        if self.misses_ == self.lr_high:
+            lr = net.get_params()['lr']
+            net.set_params(lr=lr/self.lr_decay)
+
         if self.misses_ == self.patience:
             if net.verbose:
                 self._sink("Stopping since {} has not improved in the last "
@@ -191,7 +148,7 @@ class StopRestore(EarlyStopping):
             raise KeyboardInterrupt
 
 
-class Score_ConfusionMatrix(EpochScoring):
+class ScoreConfusionMatrix(EpochScoring):
     def on_epoch_end(self, net, dataset_train, dataset_valid, **kwargs):
         EpochScoring.on_epoch_end(self, net, dataset_train, dataset_valid)
 
@@ -215,19 +172,10 @@ class NeuralNetClassifierProba(NeuralNetClassifier):
         self.optimizer_.zero_grad()
         y_pred = self.infer(Xi, **fit_params)
         loss = self.get_loss(y_pred, yi, X=Xi, training=True)
-        # print("get loss")
-        # print(loss)
-        # print("net infer")
-        # print(y_pred[0])
-        # print('conv1.1.weight')
-        # print(self.module_.state_dict()['conv1.1.weight'][0])
         if math.isnan(loss):
             print("Loss is nan")
             self.get_loss(y_pred, yi, X=Xi, training=True)
         loss.backward()
-        # print('gradient')
-        # print(self.module_.parameters().__next__().grad[0])
-        # print('\n\n')
 
         self.notify(
             'on_grad_computed',
@@ -249,16 +197,21 @@ class NeuralNetClassifierProba(NeuralNetClassifier):
 
 def train():
 
-    disc = VGGNet()
+    args = parser.parse_args()
+    print(args)
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda
+
+    disc = models[args.arch]()
+    print(disc)
 
     cp = SaveBestParam(dirname='best')
-    early_stop = StopRestore(patience=10)
+    early_stop = StopRestore(patience=20, lr_decay=10, lr_high=5)
     pb = ProgressBar()
-    score = Score_ConfusionMatrix(scoring="accuracy", lower_is_better=False)
+    score = ScoreConfusionMatrix(scoring="accuracy", lower_is_better=False)
     pt = PrintLog(keys_ignored="confusion_matrix")
     net = NeuralNetClassifierProba(
         disc,
-        max_epochs=100,
+        max_epochs=1000,
         lr=0.01,
         device='cuda',
         callbacks=[('best', cp),
