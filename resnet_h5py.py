@@ -24,6 +24,7 @@ from skorch.callbacks import ProgressBar
 import os
 import argparse
 from resnet1d import resnet18, resnet34, resnet50, resnet101
+import h5py
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 warnings.filterwarnings("ignore")
@@ -48,8 +49,15 @@ def import_from_mat(data, size):
     features = []
     labels = []
     for mod in mods:
-        real = np.array(data[mod].real[:size])
-        imag = np.array(data[mod].imag[:size])
+        complex_data = data[mod][:size]
+        complex_data = np.transpose(complex_data)
+        length = complex_data.shape[1]
+        complex_data = np.reshape(complex_data, size*length)
+        real, imag = zip(*complex_data)
+        real = np.array(real)
+        imag = np.array(imag)
+        real = np.reshape(real, (size, length))
+        imag = np.reshape(imag, (size, length))
         signal = np.concatenate([real, imag], axis=1)
         features.append(signal)
         labels.append(mods.index(mod) * np.ones([size, 1]))
@@ -64,7 +72,7 @@ def load_data(root):
 
     print("loading data")
 
-    data = scipy.io.loadmat(root)
+    data = h5py.File(root)
     features, labels = import_from_mat(data, 100000)
     features = features.astype(np.float32)
     labels = labels.astype(np.int64)
