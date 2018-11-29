@@ -1,2 +1,0 @@
-123
-Namespace(arch='resnet18', cuda='0', root='a')
